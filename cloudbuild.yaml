@@ -1,0 +1,28 @@
+steps:
+  # Install dependencies
+  - name: 'python:3.11-slim'
+    entrypoint: 'pip'
+    args: ['install', '--no-cache-dir', '-r', 'requirements.txt']
+
+  # Run DPO training
+  - name: 'python:3.11-slim'
+    entrypoint: 'python'
+    args:
+      - '-m'
+      - 'dpo.train_trl'
+      - '--dataset_name'
+      - 'hh'
+      - '--output_dir'
+      - '/workspace/output'
+    env:
+      - 'HOME=/root'
+
+substitutions:
+  _DATASET: hh
+  _OUTPUT_DIR: /workspace/output
+
+timeout: '7200s'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
