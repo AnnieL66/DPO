@@ -5,7 +5,7 @@ steps:
       - '-c'
       - |
         pip install --no-cache-dir -r requirements.txt &&
-        python3.13 -m dpo.train_trl \
+        python -m dpo.train_trl \
           --dataset_name ${_DATASET} \
           --output_dir ${_OUTPUT_DIR}
     env:
