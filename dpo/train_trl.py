@@ -77,7 +77,6 @@ def parse_args():
     p.add_argument("--batch_size", type=int,   default=4)
     p.add_argument("--grad_accum", type=int,   default=8)
     p.add_argument("--max_length", type=int,   default=768)
-    p.add_argument("--max_prompt_length", type=int, default=256)
     p.add_argument(
         "--use_4bit",
         action="store_true",
@@ -207,7 +206,6 @@ def main():
         # DPO-specific
         beta=args.beta,
         # Sequence lengths
-        max_prompt_length=args.max_prompt_length,
         max_length=args.max_length,
         # Precision
         bf16=torch.cuda.is_bf16_supported(),
