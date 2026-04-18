@@ -1,13 +1,23 @@
 steps:
-  - name: 'python:3.11-slim'
+  - name: 'pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        pip install --no-cache-dir -r requirements.txt &&
+        pip install --no-cache-dir \
+          transformers>=4.40.0 \
+          trl==1.2.0 \
+          peft>=0.10.0 \
+          datasets>=2.18.0 \
+          accelerate>=0.28.0 \
+          bitsandbytes>=0.43.0 \
+          tensorboard>=2.16.0 &&
         python -m dpo.train_trl \
           --dataset_name ${_DATASET} \
-          --output_dir ${_OUTPUT_DIR}
+          --output_dir ${_OUTPUT_DIR} \
+          --use_4bit \
+          --batch_size 1 \
+          --grad_accum 32
     env:
       - 'HOME=/root'
 
@@ -19,4 +29,4 @@ timeout: '7200s'
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: E2_HIGHCPU_8
+  machineType: N1_HIGHCPU_8
