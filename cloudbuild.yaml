@@ -1,19 +1,13 @@
 steps:
-  # Install dependencies
   - name: 'python:3.11-slim'
-    entrypoint: 'pip'
-    args: ['install', '--no-cache-dir', '-r', 'requirements.txt']
-
-  # Run DPO training
-  - name: 'python:3.11-slim'
-    entrypoint: 'python'
+    entrypoint: 'bash'
     args:
-      - '-m'
-      - 'dpo.train_trl'
-      - '--dataset_name'
-      - 'hh'
-      - '--output_dir'
-      - '/workspace/output'
+      - '-c'
+      - |
+        pip install --no-cache-dir -r requirements.txt &&
+        python3.13 -m dpo.train_trl \
+          --dataset_name ${_DATASET} \
+          --output_dir ${_OUTPUT_DIR}
     env:
       - 'HOME=/root'
 
