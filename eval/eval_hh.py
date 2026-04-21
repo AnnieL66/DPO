@@ -1,0 +1,241 @@
+"""
+eval/eval_hh.py
+---------------
+Evaluate a checkpoint on the hh-rlhf eval set (hh_eval_500.jsonl).
+
+Computes metrics M1, M2, M3 from the project spec:
+  M1 — Preference accuracy (sum log-prob)
+  M2 — RM score of generations (requires --rm_path)
+  M3 — Mean response length
+
+Usage
+-----
+# Baseline (no RM scoring):
+python eval/eval_hh.py \
+    --model_path Qwen/Qwen2.5-Coder-1.5B-Instruct \
+    --eval_file hh_eval_500.jsonl \
+    --output eval_results_base.json
+
+# With RM scoring:
+python eval/eval_hh.py \
+    --model_path ./qwen-coder-dpo \
+    --eval_file hh_eval_500.jsonl \
+    --rm_path ./rm-checkpoint \
+    --output eval_results_dpo.json
+"""
+
+import argparse
+import json
+
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+# ---------------------------------------------------------------------------
+# M1: Preference accuracy (sum log-prob)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def sequence_logprob(model, tokenizer, prompt: str, response: str) -> float:
+    """Sum of token log-probabilities for `response` conditioned on `prompt`."""
+    full = prompt + response
+    full_ids = tokenizer(full, return_tensors="pt").input_ids.to(model.device)
+    prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
+    prompt_len = prompt_ids.shape[1]
+
+    logits = model(full_ids).logits  # [1, T, V]
+    # logits[:, t] predicts token at position t+1
+    log_probs = F.log_softmax(logits[:, :-1].float(), dim=-1)
+    targets = full_ids[:, 1:]  # [1, T-1]
+    token_lp = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)  # [1, T-1]
+
+    # Keep only log-probs for response tokens (positions >= prompt_len in full_ids).
+    # Due to the shift above, response tokens start at index prompt_len - 1 of token_lp.
+    response_lp = token_lp[:, prompt_len - 1:]
+    return response_lp.sum().item()
+
+
+def preference_accuracy(model, tokenizer, pairs):
+    correct = 0
+    for i, p in enumerate(pairs):
+        lp_c = sequence_logprob(model, tokenizer, p["prompt"], p["chosen"])
+        lp_r = sequence_logprob(model, tokenizer, p["prompt"], p["rejected"])
+        if lp_c > lp_r:
+            correct += 1
+        if (i + 1) % 50 == 0:
+            print(f"  M1: {i+1}/{len(pairs)} pairs evaluated ...")
+    return correct / len(pairs)
+
+
+# ---------------------------------------------------------------------------
+# M2: RM score of generations
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def rm_score_of_generations(policy, policy_tok, rm, rm_tok, prompts, device):
+    scores = []
+    for i, prompt in enumerate(prompts):
+        ids = policy_tok(prompt, return_tensors="pt").to(device)
+        gen = policy.generate(
+            **ids,
+            max_new_tokens=256,
+            do_sample=False,
+            pad_token_id=policy_tok.eos_token_id,
+        )
+        text = policy_tok.decode(
+            gen[0, ids.input_ids.shape[1]:], skip_special_tokens=True
+        )
+        rm_in = rm_tok(
+            prompt + text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024,
+        ).to(device)
+        scores.append(rm(**rm_in).logits.squeeze().item())
+        if (i + 1) % 50 == 0:
+            print(f"  M2/M3: {i+1}/{len(prompts)} prompts generated ...")
+    return scores
+
+
+# ---------------------------------------------------------------------------
+# M3: Mean response length
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def mean_response_length(policy, policy_tok, prompts):
+    lengths = []
+    for prompt in prompts:
+        ids = policy_tok(prompt, return_tensors="pt").to(policy.device)
+        gen = policy.generate(
+            **ids,
+            max_new_tokens=256,
+            do_sample=False,
+            pad_token_id=policy_tok.eos_token_id,
+        )
+        n_new = gen.shape[1] - ids.input_ids.shape[1]
+        lengths.append(n_new)
+    return sum(lengths) / len(lengths)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--model_path", required=True,
+                   help="HF model name or local path to the policy checkpoint")
+    p.add_argument("--eval_file", default="hh_eval_500.jsonl",
+                   help="Path to hh_eval_500.jsonl")
+    p.add_argument("--rm_path", default=None,
+                   help="Path to the reward model (optional; skips M2 if absent)")
+    p.add_argument("--output", default="eval_results.json",
+                   help="Path to write the JSON results file")
+    p.add_argument("--n_pairs", type=int, default=500,
+                   help="Number of eval pairs to use (default: all 500)")
+    p.add_argument("--use_4bit", action="store_true")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Load eval pairs
+    with open(args.eval_file) as f:
+        pairs = [json.loads(line) for line in f]
+    pairs = pairs[: args.n_pairs]
+    print(f"Loaded {len(pairs)} eval pairs from {args.eval_file}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+
+    # Load policy
+    print(f"Loading policy: {args.model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_path, trust_remote_code=True
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    if args.use_4bit:
+        from transformers import BitsAndBytesConfig
+        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path, quantization_config=bnb, device_map="auto",
+            trust_remote_code=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+    model.eval()
+
+    results = {}
+
+    # M1: Preference accuracy
+    print("Computing M1: preference accuracy ...")
+    acc = preference_accuracy(model, tokenizer, pairs)
+    results["M1_preference_accuracy"] = acc
+    print(f"  M1 = {acc:.4f}")
+
+    # M3: Mean response length (also collected during M2 if RM available)
+    if args.rm_path is None:
+        print("Computing M3: mean response length (no RM path given, skipping M2) ...")
+        avg_len = mean_response_length(model, tokenizer, [p["prompt"] for p in pairs])
+        results["M3_mean_response_length"] = avg_len
+        print(f"  M3 = {avg_len:.1f} tokens")
+    else:
+        # M2 + M3 together (share the same generation pass)
+        print(f"Loading reward model: {args.rm_path}")
+        rm_tok = AutoTokenizer.from_pretrained(args.rm_path, trust_remote_code=True)
+        rm = AutoModelForCausalLM.from_pretrained(
+            args.rm_path,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        rm.eval()
+
+        print("Computing M2 (RM scores) and M3 (response lengths) ...")
+        prompts = [p["prompt"] for p in pairs]
+        ids_list = [tokenizer(pr, return_tensors="pt").to(device) for pr in prompts]
+        scores = []
+        lengths = []
+        for i, (prompt, ids) in enumerate(zip(prompts, ids_list)):
+            gen = model.generate(
+                **ids,
+                max_new_tokens=256,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            n_new = gen.shape[1] - ids.input_ids.shape[1]
+            lengths.append(n_new)
+            text = tokenizer.decode(gen[0, ids.input_ids.shape[1]:], skip_special_tokens=True)
+            rm_in = rm_tok(
+                prompt + text, return_tensors="pt", truncation=True, max_length=1024
+            ).to(device)
+            scores.append(rm(**rm_in).logits.squeeze().item())
+            if (i + 1) % 50 == 0:
+                print(f"  {i+1}/{len(prompts)} done ...")
+
+        sorted_scores = sorted(scores)
+        results["M2_rm_score_mean"] = sum(scores) / len(scores)
+        results["M2_rm_score_median"] = sorted_scores[len(sorted_scores) // 2]
+        results["M3_mean_response_length"] = sum(lengths) / len(lengths)
+        print(f"  M2 mean  = {results['M2_rm_score_mean']:.4f}")
+        print(f"  M2 median= {results['M2_rm_score_median']:.4f}")
+        print(f"  M3       = {results['M3_mean_response_length']:.1f} tokens")
+
+    # Write results
+    with open(args.output, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults written to {args.output}")
+    print(json.dumps(results, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -213,6 +213,12 @@ def main():
             not torch.cuda.is_bf16_supported()
             and torch.cuda.is_available()
         ),
+        # Memory: recompute activations on the backward pass instead of
+        # storing them.  Cuts activation memory ~60% at ~20% extra compute.
+        # Required for DPO on a single L4 (22 GB): each step runs both a
+        # policy and a reference forward pass over chosen+rejected sequences.
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         # Logging
         logging_steps=10,
         save_steps=100,
