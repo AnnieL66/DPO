@@ -17,9 +17,14 @@ so there is zero risk of accidentally updating the reference.
 
 Memory note
 -----------
-Two copies of a 1.5B model is approximately 6 GB in bfloat16.  On a 24 GB
-L4 this is fine.  LoRA adds only ~0.3% extra parameters to the policy, so
-the total is effectively two frozen copies plus a tiny adapter.
+Two copies of a 1.5B model is approximately 6 GB in bfloat16.  An L4 has
+22 GB of VRAM.  However, TRL's DPOTrainer uses ref_model=None with a PEFT
+model and calls model.disable_adapter() for the reference forward pass, so
+only ONE copy of the base weights is loaded.  The dominant memory cost is
+activations: DPO processes chosen and rejected sequences in the same step,
+and runs both a policy and a reference forward pass, effectively 4× the
+activation memory of standard SFT.  Keep per_device_train_batch_size ≤ 2
+on a single L4 at max_length=768, and compensate with gradient_accumulation.
 """
 
 import torch

@@ -169,52 +169,39 @@ class TestBatchLogps:
         # so the sum with more masks should be >= the sum without.
         assert sum_half.item() >= sum_full.item()
 
-    def test_average_vs_sum_scale(self):
+    def test_sum_scales_with_length(self):
         """
-        average_log_prob=True reduces length bias: the gap between two
-        sequences of different lengths should be smaller when using averages
-        than when using raw sums.
+        The default (sum) log-prob scales proportionally with sequence length.
 
         We construct the same per-token distribution for two sequences of
-        different lengths by using the same single-row logits, tiled.  With
-        raw sums the longer sequence is ~k times more negative; with averages
-        both sequences return roughly the same per-token value.
+        different lengths by tiling the same single-row logits.  With sum
+        log-probs (the default after switching from mean), the longer sequence
+        has a sum that is exactly (L_long - 1) / (L_short - 1) times the
+        shorter one, because each scored position contributes the same
+        per-token log-prob.
+
+        The causal shift in _batch_logps means a sequence of length L
+        contributes L-1 scored positions, hence the ratio uses (L - 1).
         """
         torch.manual_seed(4)
         V = TinyLM.VOCAB
 
-        # One row of logits representing a single token distribution.
         single_token_logits = torch.randn(1, 1, V, dtype=torch.float32)
 
         L_short, L_long = 4, 12
 
-        # Tile the same distribution across all positions so expected per-token
-        # log-prob is identical for both lengths.
         logits_short = single_token_logits.expand(1, L_short, V).contiguous()
         logits_long = single_token_logits.expand(1, L_long, V).contiguous()
 
-        # Use the same token index at every position so the chosen token's
-        # log-prob is also identical.
         token_idx = torch.argmax(single_token_logits.squeeze())
         labels_short = torch.full((1, L_short), token_idx.item(), dtype=torch.long)
         labels_long = torch.full((1, L_long), token_idx.item(), dtype=torch.long)
 
-        avg_short = _batch_logps(logits_short, labels_short, average_log_prob=True)
-        avg_long = _batch_logps(logits_long, labels_long, average_log_prob=True)
-        sum_short = _batch_logps(logits_short, labels_short, average_log_prob=False)
-        sum_long = _batch_logps(logits_long, labels_long, average_log_prob=False)
+        # Default is now sum (average_log_prob=False).
+        sum_short = _batch_logps(logits_short, labels_short)
+        sum_long = _batch_logps(logits_long, labels_long)
 
-        # With identical per-token distributions, the averages should be equal.
-        assert torch.allclose(avg_short, avg_long, atol=1e-5), (
-            f"Averages should be equal for identical per-token distributions; "
-            f"got short={avg_short.item():.4f}, long={avg_long.item():.4f}"
-        )
-
-        # The raw sums should differ by the ratio of lengths (long / short = 3x).
-        # _batch_logps applies the causal shift: logits[:, :-1] predicts
-        # labels[:, 1:], so a sequence of length L contributes L-1 scored
-        # positions to the sum.  The expected ratio is therefore:
-        #   (L_long - 1) / (L_short - 1)
+        # The raw sums should differ by the ratio of scored positions.
         ratio = sum_long.item() / sum_short.item()
         expected_ratio = float(L_long - 1) / float(L_short - 1)
         assert abs(ratio - expected_ratio) < 0.01, (
@@ -238,12 +225,11 @@ class TestBatchLogps:
 
     def test_all_masked_returns_zero(self):
         """
-        When all labels are -100 (no response tokens), the masked sum is 0
-        and the average is also 0 (n_tokens clamped to 1 to avoid div-by-zero).
+        When all labels are -100 (no response tokens), the masked sum is 0.
         """
         logits = torch.randn(2, 5, TinyLM.VOCAB, dtype=torch.float32)
         labels = torch.full((2, 5), -100, dtype=torch.long)
-        out = _batch_logps(logits, labels, average_log_prob=True)
+        out = _batch_logps(logits, labels)
         assert (out == 0.0).all()
 
 

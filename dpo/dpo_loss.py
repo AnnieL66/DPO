@@ -27,19 +27,19 @@ from torch import Tensor
 def _batch_logps(
     logits: Tensor,  # [B, L, V]  — MUST be float32
     labels: Tensor,  # [B, L]     — -100 for prompt / pad
-    average_log_prob: bool = True,
+    average_log_prob: bool = False,
 ) -> Tensor:  # [B]
     """
     Sequence-level log P(response | prompt) for a batch.
 
-    average_log_prob=True (default, recommended for code generation):
+    average_log_prob=False (default, vanilla DPO formulation):
+        Returns the raw sum of token log-probs, identical to Eq. 7 of
+        Rafailov et al. 2023.
+
+    average_log_prob=True (length-normalised variant, closer to IPO):
         Returns mean per-token log-prob: sum(log_probs) / n_response_tokens.
         Sequences of different lengths are put on the same scale, so the
         DPO reward margin is driven by quality, not token count.
-
-    average_log_prob=False (strict DPO-paper formulation):
-        Returns the raw sum, identical to Eq. 7 of Rafailov et al. 2023.
-        Correct in theory but biased when chosen/rejected differ in length.
     """
     assert logits.dtype == torch.float32, (
         f"logits must be float32 before _batch_logps; got {logits.dtype}. "
@@ -88,7 +88,7 @@ def concatenated_forward(
     rejected_mask: Tensor,  # [B, Lr]
     rejected_labels: Tensor,  # [B, Lr]
     pad_token_id: int = 0,
-    average_log_prob: bool = True,
+    average_log_prob: bool = False,
 ) -> Tuple[Tensor, Tensor]:  # ([B], [B])
     """
     Run ONE forward pass with chosen and rejected stacked along batch dim.
@@ -155,7 +155,7 @@ def compute_log_probs(
     input_ids: Tensor,  # [B, L]
     attention_mask: Tensor,  # [B, L]
     labels: Tensor,  # [B, L]  — -100 for prompt tokens
-    average_log_prob: bool = True,
+    average_log_prob: bool = False,
 ) -> Tensor:  # [B]
     """
     Thin wrapper for single-sequence use (toy_example, tests, evaluation).
@@ -235,7 +235,7 @@ def training_step(
     ref_model: torch.nn.Module,
     beta: float = 0.1,
     pad_token_id: int = 0,
-    average_log_prob: bool = True,
+    average_log_prob: bool = False,
 ) -> Tuple[Tensor, dict]:
     """
     One DPO training step.
