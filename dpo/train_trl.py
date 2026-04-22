@@ -40,6 +40,7 @@ import argparse
 
 import torch
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from peft import get_peft_model
 
 from .data_utils import build_trl_dataset, SAMPLE_PREFERENCE_DATA
 from .model_utils import LORA_CONFIG, load_tokenizer
@@ -125,12 +126,17 @@ def build_model_for_trl(
     use_4bit: bool = False,
 ):
     """
-    Load the base model for TRL training.
+    Load the base model and explicitly wrap it with LoRA adapters.
 
-    TRL's DPOTrainer creates its own frozen reference model internally when
-    you pass a PEFT model: it calls model.disable_adapter() to run the
-    reference forward pass.  This means we only load the base weights once —
-    TRL handles the dual-model logic automatically, saving memory.
+    We pre-wrap with get_peft_model() here rather than passing peft_config to
+    DPOTrainer, because some TRL versions silently ignore peft_config when the
+    model is not already a PEFT model, leaving all 1.5B parameters unfrozen
+    and producing a flat loss at 0.693.  Pre-wrapping guarantees LoRA is
+    applied regardless of TRL version.
+
+    TRL detects that the model is already a PEFT model and calls
+    model.disable_adapter() for the reference forward pass, so only ONE copy
+    of the base weights is loaded in memory.
     """
     torch_dtype = torch.bfloat16 if use_bf16 else torch.float32
 
@@ -141,20 +147,22 @@ def build_model_for_trl(
             bnb_4bit_compute_dtype=torch_dtype,
             bnb_4bit_use_double_quant=True,
         )
-        model = AutoModelForCausalLM.from_pretrained(
+        base = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=bnb_cfg,
             device_map="auto",
             trust_remote_code=True,
         )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        base = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch_dtype,
             device_map="auto",
             trust_remote_code=True,
         )
 
+    model = get_peft_model(base, LORA_CONFIG)
+    model.print_trainable_parameters()  # confirms LoRA applied: expect ~0.3%
     return model
 
 
@@ -310,12 +318,13 @@ def main():
     # first and fall back gracefully for older installs.
     # ------------------------------------------------------------------
     trainer_kwargs = dict(
-        model=model,
+        model=model,   # already PEFT-wrapped; TRL will use disable_adapter() for ref
         ref_model=None,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        peft_config=LORA_CONFIG,
+        # peft_config intentionally omitted: model is pre-wrapped above.
+        # Passing it here would cause TRL to double-wrap the adapters.
     )
     # Pass max_prompt_length directly to DPOTrainer for older TRL versions
     # that don't support it in DPOConfig.
