@@ -31,57 +31,65 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 # ---------------------------------------------------------------------------
-# Prompt helpers
-# ---------------------------------------------------------------------------
-
-def make_prompt(task: dict) -> str:
-    """
-    Build the prompt for a HumanEval task.
-
-    The task dict has a "prompt" field which is the function signature +
-    docstring.  We pass it as-is; the model should complete the function body.
-    """
-    return task["prompt"]
-
-
-# ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
 
+def _build_prompt(tokenizer, task_prompt: str) -> str:
+    """
+    Wrap the raw HumanEval task prompt for the model.
+
+    Instruct models (e.g. Qwen2.5-Coder-*-Instruct) require input formatted
+    via the chat template.  Without it they generate conversational text
+    instead of code, collapsing pass@1 from ~65% to ~18%.
+
+    Base models (no chat_template) receive the raw prompt directly, which is
+    the standard HumanEval completion-style setup.
+    """
+    if getattr(tokenizer, "chat_template", None):
+        messages = [{
+            "role": "user",
+            "content": (
+                "Complete the body of the following Python function. "
+                "Output only the code, no explanation:\n\n" + task_prompt
+            ),
+        }]
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    return task_prompt
+
+
+def _stop_token_ids(tokenizer) -> list:
+    """
+    Collect EOS / end-of-turn token IDs for the model.
+
+    Qwen models use <|im_end|> as the end-of-turn token.  Including it here
+    stops generation at the natural end of the assistant turn instead of
+    continuing into padding or hallucinated turns.
+    """
+    ids = [tokenizer.eos_token_id]
+    for name in ["<|im_end|>", "<|endoftext|>", "<|EOT|>"]:
+        tid = tokenizer.convert_tokens_to_ids(name)
+        if tid and tid != tokenizer.unk_token_id and tid not in ids:
+            ids.append(tid)
+    return ids
+
+
 @torch.no_grad()
-def generate_completion(model, tokenizer, prompt: str, max_new_tokens: int = 512) -> str:
-    """Greedy decode a single completion for one HumanEval prompt."""
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+def generate_completion(model, tokenizer, task_prompt: str, max_new_tokens: int = 512) -> str:
+    """Greedy decode a single completion for one HumanEval task prompt."""
+    prompt_text = _build_prompt(tokenizer, task_prompt)
+    inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
     outputs = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,
         pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        eos_token_id=_stop_token_ids(tokenizer),
     )
-    # Decode only the newly generated tokens (strip the prompt).
-    completion = tokenizer.decode(
+    return tokenizer.decode(
         outputs[0, inputs.input_ids.shape[1]:], skip_special_tokens=True
     )
-    return completion
-
-
-def stop_at_function_boundary(completion: str) -> str:
-    """
-    Truncate the completion at the first top-level definition or class after
-    the initial function body.  HumanEval tasks define one function; any
-    subsequent `def` or `class` at the top level is outside the target scope.
-    """
-    lines = completion.split("\n")
-    result = []
-    for line in lines:
-        # A new top-level def/class signals the end of the target function.
-        if result and line and not line[0].isspace() and (
-            line.startswith("def ") or line.startswith("class ")
-        ):
-            break
-        result.append(line)
-    return "\n".join(result)
 
 
 # ---------------------------------------------------------------------------
@@ -157,50 +165,69 @@ def main():
     print(f"Generating completions for {len(problems)} problems ...")
     samples = []
     for i, (task_id, task) in enumerate(problems.items()):
-        prompt = make_prompt(task)
-        completion = generate_completion(model, tokenizer, prompt, args.max_new_tokens)
-        completion = stop_at_function_boundary(completion)
+        completion = generate_completion(
+            model, tokenizer, task["prompt"], args.max_new_tokens
+        )
         samples.append({"task_id": task_id, "completion": completion})
         if (i + 1) % 20 == 0:
             print(f"  {i+1}/{len(problems)} done ...")
 
-    # Write samples.jsonl
+    # Write raw samples.jsonl
     with open(samples_path, "w") as f:
         for s in samples:
             f.write(json.dumps(s) + "\n")
     print(f"Wrote {len(samples)} completions to {samples_path}")
 
     # ------------------------------------------------------------------
+    # Sanitize: strip markdown fences and extract pure Python code.
+    # Instruct models often wrap completions in ```python ... ``` blocks.
+    # evalplus.sanitize handles this and writes <stem>-sanitized.jsonl.
+    # ------------------------------------------------------------------
+    eval_samples_path = samples_path
+    if use_evalplus:
+        print("Sanitizing completions (stripping markdown) ...")
+        san_cmd = [
+            sys.executable, "-m", "evalplus.sanitize",
+            "--samples", samples_path,
+        ]
+        san = subprocess.run(san_cmd, capture_output=True, text=True)
+        if san.returncode == 0:
+            stem = os.path.splitext(samples_path)[0]
+            sanitized_path = stem + "-sanitized.jsonl"
+            if os.path.exists(sanitized_path):
+                eval_samples_path = sanitized_path
+                print(f"  Using sanitized samples: {sanitized_path}")
+        else:
+            print("  evalplus.sanitize failed; using raw samples.")
+            print(san.stderr[:500])
+
+    # ------------------------------------------------------------------
     # Evaluate pass@1
     # ------------------------------------------------------------------
     print("Running pass@1 evaluation ...")
-    results_path = args.out
 
     if use_evalplus:
-        # evalplus CLI: evalplus.evaluate --dataset humaneval --samples <path>
         cmd = [
             sys.executable, "-m", "evalplus.evaluate",
             "--dataset", "humaneval",
-            "--samples", samples_path,
+            "--samples", eval_samples_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
         if result.returncode != 0:
             print("evalplus stderr:", result.stderr)
-        # evalplus writes results as <samples_stem>_eval_results.json
-        # next to samples.jsonl (e.g. samples_eval_results.json).
-        samples_stem = os.path.splitext(samples_path)[0]
-        evalplus_results = samples_stem + "_eval_results.json"
+        # evalplus writes <samples_stem>_eval_results.json next to the samples file
+        stem = os.path.splitext(eval_samples_path)[0]
+        evalplus_results = stem + "_eval_results.json"
         pass_at_1 = None
         if os.path.exists(evalplus_results):
             with open(evalplus_results) as f:
                 eval_data = json.load(f)
-            # evalplus reports pass@1 under the "humaneval" key
             he = eval_data.get("humaneval", eval_data)
             pass_at_1 = he.get("pass@1", None)
     else:
         from human_eval.evaluation import evaluate_functional_correctness
-        eval_data = evaluate_functional_correctness(samples_path)
+        eval_data = evaluate_functional_correctness(eval_samples_path)
         pass_at_1 = eval_data.get("pass@1", None)
 
     summary = {
