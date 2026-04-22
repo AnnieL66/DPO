@@ -12,12 +12,12 @@ Usage
 # Baseline:
 python eval/eval_humaneval.py \
     --model_path Qwen/Qwen2.5-Coder-1.5B-Instruct \
-    --output_dir eval_humaneval_base
+    --out results/baseline_humaneval.json
 
 # DPO checkpoint:
 python eval/eval_humaneval.py \
-    --model_path ./qwen-coder-dpo \
-    --output_dir eval_humaneval_dpo
+    --model ./qwen-coder-dpo \
+    --out results/dpo_humaneval.json
 """
 
 import argparse
@@ -174,7 +174,7 @@ def main():
     # Evaluate pass@1
     # ------------------------------------------------------------------
     print("Running pass@1 evaluation ...")
-    results_path = os.path.join(args.output_dir, "results.json")
+    results_path = args.out
 
     if use_evalplus:
         # evalplus CLI: evalplus.evaluate --dataset humaneval --samples <path>
