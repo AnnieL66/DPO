@@ -242,8 +242,12 @@ def main():
     # DPOConfig  (hyperparameters from proposal Section 2.7, Method 2)
     # ------------------------------------------------------------------
     from trl import DPOTrainer, DPOConfig
+    import inspect
 
-    training_args = DPOConfig(
+    # max_prompt_length was added to DPOConfig in TRL 0.9.x.
+    # Older installs accept it only as a DPOTrainer kwarg — check first.
+    _dpo_config_params = set(inspect.signature(DPOConfig).parameters)
+    _dpo_config_kwargs = dict(
         output_dir=args.output_dir,
         # Reproducibility
         seed=args.seed,
@@ -256,7 +260,6 @@ def main():
         beta=args.beta,
         # Sequence lengths
         max_length=args.max_length,
-        max_prompt_length=args.max_prompt_length,
         # Precision
         bf16=torch.cuda.is_bf16_supported(),
         fp16=(
@@ -277,6 +280,15 @@ def main():
         report_to=["tensorboard"],
         remove_unused_columns=False,
     )
+    if "max_prompt_length" in _dpo_config_params:
+        _dpo_config_kwargs["max_prompt_length"] = args.max_prompt_length
+    else:
+        print(
+            f"  [INFO] This TRL version does not support max_prompt_length "
+            f"in DPOConfig; will pass it to DPOTrainer directly."
+        )
+
+    training_args = DPOConfig(**_dpo_config_kwargs)
 
     # ------------------------------------------------------------------
     # DPOTrainer
@@ -297,6 +309,12 @@ def main():
         eval_dataset=eval_dataset,
         peft_config=LORA_CONFIG,
     )
+    # Pass max_prompt_length directly to DPOTrainer for older TRL versions
+    # that don't support it in DPOConfig.
+    if "max_prompt_length" not in _dpo_config_params:
+        _trainer_params = set(inspect.signature(DPOTrainer.__init__).parameters)
+        if "max_prompt_length" in _trainer_params:
+            trainer_kwargs["max_prompt_length"] = args.max_prompt_length
 
     try:
         trainer = DPOTrainer(**trainer_kwargs, processing_class=tokenizer)
