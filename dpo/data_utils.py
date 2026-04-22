@@ -29,11 +29,12 @@ from typing import Dict, List, Optional
 from datasets import Dataset as HFDataset
 
 DATASET_TRUNCATION_MODE: Dict[str, str] = {
-    "hh":  "keep_end",
-    "shp": "keep_start",
+    "hh":       "keep_end",
+    "hh_local": "keep_end",   # same format as hh; preserve recent context
+    "shp":      "keep_start",
 }
 
-SUPPORTED_DATASETS: tuple = ("hh", "shp")
+SUPPORTED_DATASETS: tuple = ("hh", "hh_local", "shp")
 
 # Pin the same HH revision used by shared/prepare_hh_split.py so that
 # training and eval data come from the identical snapshot of the dataset.
@@ -188,6 +189,43 @@ def get_hh(split: str, silent: bool = False) -> List[Dict]:
     return data
 
 
+def get_hh_local(
+    split: str,
+    filepath: str,
+    silent: bool = False,
+) -> List[Dict]:
+    """
+    Load hh-rlhf preference pairs from a local JSONL file produced by
+    shared/prepare_hh_split.py.
+
+    The `split` argument is accepted for interface consistency with the other
+    loaders but is ignored — the caller selects the file via `filepath`.
+
+    Each line must be a JSON object with keys:
+        prompt   — full conversation up to the last '\\n\\nAssistant:'
+        chosen   — preferred response text only
+        rejected — dispreferred response text only
+    """
+    import json
+
+    if not filepath:
+        raise ValueError(
+            "get_hh_local requires a 'filepath' kwarg. "
+            "Pass it via --train_file or --eval_file."
+        )
+    if not silent:
+        print(f"Loading hh_local from {filepath} ...")
+    data: List[Dict] = []
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                data.append(json.loads(line))
+    if not silent:
+        print(f"  {len(data)} pairs loaded.")
+    return data
+
+
 def get_shp(
     split: str,
     min_score_ratio: float = 2.0,
@@ -255,6 +293,8 @@ def load_dataset_by_name(
     """Dispatch to the correct loader by dataset name."""
     if name == "hh":
         return get_hh(split, **kwargs)
+    elif name == "hh_local":
+        return get_hh_local(split, **kwargs)
     elif name == "shp":
         return get_shp(split, **kwargs)
     else:

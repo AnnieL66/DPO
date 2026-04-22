@@ -44,7 +44,7 @@ from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from .data_utils import build_trl_dataset, SAMPLE_PREFERENCE_DATA
 from .model_utils import LORA_CONFIG, load_tokenizer
 
-BUILTIN_DATASETS = ("hh", "shp")
+BUILTIN_DATASETS = ("hh", "hh_local", "shp")
 
 
 def parse_args():
@@ -183,24 +183,19 @@ def main():
     # ------------------------------------------------------------------
     print("Loading dataset ...")
     if args.train_file or args.dataset_name == "hh_local":
-        import json
-        from datasets import Dataset as HFDataset
-        train_path = args.train_file
-        if train_path is None:
+        if args.train_file is None:
             raise RuntimeError(
                 "--dataset_name hh_local requires --train_file to be set."
             )
-        print(f"  Loading training data from {train_path} ...")
-        with open(train_path) as f:
-            raw = [json.loads(line) for line in f]
-        train_dataset = HFDataset.from_list(raw)
-        print(f"  {len(train_dataset)} training examples loaded.")
+        # Route through data_utils.get_hh_local so the loader lives in one place.
+        train_data = build_trl_dataset(
+            dataset_name="hh_local", split="train", filepath=args.train_file
+        )
+        train_dataset = train_data
         if args.eval_file:
-            print(f"  Loading eval data from {args.eval_file} ...")
-            with open(args.eval_file) as f:
-                eval_raw = [json.loads(line) for line in f]
-            eval_dataset = HFDataset.from_list(eval_raw)
-            print(f"  {len(eval_dataset)} eval examples loaded.")
+            eval_dataset = build_trl_dataset(
+                dataset_name="hh_local", split="eval", filepath=args.eval_file
+            )
         else:
             eval_dataset = None
     elif args.dataset_name:
@@ -284,8 +279,8 @@ def main():
         _dpo_config_kwargs["max_prompt_length"] = args.max_prompt_length
     else:
         print(
-            f"  [INFO] This TRL version does not support max_prompt_length "
-            f"in DPOConfig; will pass it to DPOTrainer directly."
+            "  [INFO] This TRL version does not support max_prompt_length "
+            "in DPOConfig; will pass it to DPOTrainer directly."
         )
 
     training_args = DPOConfig(**_dpo_config_kwargs)
