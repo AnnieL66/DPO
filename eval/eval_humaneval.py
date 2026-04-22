@@ -23,6 +23,7 @@ python eval/eval_humaneval.py \
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -57,6 +58,22 @@ def _build_prompt(tokenizer, task_prompt: str) -> str:
             messages, tokenize=False, add_generation_prompt=True
         )
     return task_prompt
+
+
+def _extract_code(response: str) -> str:
+    """
+    Strip markdown fences and return plain Python code.
+
+    evalplus.sanitize searches for 'def <entry_point>' inside the completion
+    and returns "" when it cannot find it.  Instruct models return the function
+    *body* (indented, no 'def' header), so sanitize always strips them to "".
+    Instead we just remove the ```python ... ``` wrapper ourselves and pass the
+    raw code straight to evalplus.evaluate.
+    """
+    blocks = re.findall(r"```(?:python)?\n?(.*?)```", response, re.DOTALL)
+    if blocks:
+        return blocks[-1]
+    return response
 
 
 def _stop_token_ids(tokenizer) -> list:
@@ -168,7 +185,7 @@ def main():
         completion = generate_completion(
             model, tokenizer, task["prompt"], args.max_new_tokens
         )
-        samples.append({"task_id": task_id, "completion": completion})
+        samples.append({"task_id": task_id, "completion": _extract_code(completion)})
         if (i + 1) % 20 == 0:
             print(f"  {i+1}/{len(problems)} done ...")
 
@@ -179,27 +196,13 @@ def main():
     print(f"Wrote {len(samples)} completions to {samples_path}")
 
     # ------------------------------------------------------------------
-    # Sanitize: strip markdown fences and extract pure Python code.
-    # Instruct models often wrap completions in ```python ... ``` blocks.
-    # evalplus.sanitize handles this and writes <stem>-sanitized.jsonl.
-    # ------------------------------------------------------------------
+    # NOTE: We intentionally skip evalplus.sanitize here.
+    # evalplus.sanitize searches for 'def <entry_point>' in the completion
+    # and strips it to "" when not found.  Instruct models output the function
+    # body (indented, no 'def' header), so sanitize always produces empty
+    # completions → pass@1 = 0.0.  We run _extract_code() during generation
+    # above to strip markdown fences; no further sanitization is needed.
     eval_samples_path = samples_path
-    if use_evalplus:
-        print("Sanitizing completions (stripping markdown) ...")
-        san_cmd = [
-            sys.executable, "-m", "evalplus.sanitize",
-            "--samples", samples_path,
-        ]
-        san = subprocess.run(san_cmd, capture_output=True, text=True)
-        if san.returncode == 0:
-            stem = os.path.splitext(samples_path)[0]
-            sanitized_path = stem + "-sanitized.jsonl"
-            if os.path.exists(sanitized_path):
-                eval_samples_path = sanitized_path
-                print(f"  Using sanitized samples: {sanitized_path}")
-        else:
-            print("  evalplus.sanitize failed; using raw samples.")
-            print(san.stderr[:500])
 
     # ------------------------------------------------------------------
     # Evaluate pass@1
