@@ -19,6 +19,9 @@ Usage
     # Smoke test with built-in 3-example sample data:
     python -m dpo.train_trl
 
+    # Load from the deterministic 3k JSONL split (recommended for this project):
+    python -m dpo.train_trl --train_file hh_train_3k.jsonl
+
     # Named built-in datasets (hh or shp) — uses custom prompt extraction:
     python -m dpo.train_trl --dataset_name hh
     python -m dpo.train_trl --dataset_name shp
@@ -28,7 +31,7 @@ Usage
 
     # Full options:
     python -m dpo.train_trl \\
-        --dataset_name hh \\
+        --train_file hh_train_3k.jsonl \\
         --model_name Qwen/Qwen2.5-Coder-1.5B-Instruct \\
         --output_dir qwen-coder-dpo
 """
@@ -53,13 +56,30 @@ def parse_args():
     )
     p.add_argument("--output_dir", default="qwen-coder-dpo")
     p.add_argument(
+        "--train_file",
+        default=None,
+        help=(
+            "Path to a local JSONL file with 'prompt', 'chosen', 'rejected' "
+            "columns (e.g. hh_train_3k.jsonl from prepare_hh_split.py). "
+            "Takes priority over --dataset_name when both are given."
+        ),
+    )
+    p.add_argument(
+        "--eval_file",
+        default=None,
+        help=(
+            "Path to a local JSONL file for evaluation "
+            "(e.g. hh_eval_500.jsonl). Used when --train_file is given."
+        ),
+    )
+    p.add_argument(
         "--dataset_name",
         default=None,
         help=(
-            "Dataset to train on. Use 'hh' or 'shp' for the built-in loaders "
-            "with correct prompt extraction, or a HuggingFace Hub dataset name "
-            "that already contains 'prompt', 'chosen', and 'rejected' columns. "
-            "Omit to run a smoke test with the 3-example built-in sample data."
+            "Dataset to train on. Use 'hh' or 'shp' for the built-in loaders, "
+            "'hh_local' to use --train_file/--eval_file local JSONL files, "
+            "or a HuggingFace Hub dataset name with 'prompt'/'chosen'/'rejected' "
+            "columns. Omit to run a smoke test with the 3-example built-in data."
         ),
     )
     p.add_argument(
@@ -71,12 +91,18 @@ def parse_args():
             "is skipped with a warning."
         ),
     )
-    p.add_argument("--beta",       type=float, default=0.1)
-    p.add_argument("--lr",         type=float, default=5e-7)
-    p.add_argument("--epochs",     type=int,   default=3)
-    p.add_argument("--batch_size", type=int,   default=4)
-    p.add_argument("--grad_accum", type=int,   default=8)
-    p.add_argument("--max_length", type=int,   default=768)
+    p.add_argument(
+        "--seed", type=int, default=42,
+        help="Random seed for reproducibility (default: 42)",
+    )
+    p.add_argument("--beta",              type=float, default=0.1)
+    p.add_argument("--lr",               type=float, default=5e-7)
+    p.add_argument("--epochs",           type=int,   default=3)
+    p.add_argument("--batch_size",       type=int,   default=4)
+    p.add_argument("--grad_accum",       type=int,   default=8)
+    p.add_argument("--max_length",       type=int,   default=768)
+    p.add_argument("--max_prompt_length", type=int,  default=256,
+                   help="Maximum prompt length in tokens (default 256)")
     p.add_argument(
         "--use_4bit",
         action="store_true",
@@ -156,7 +182,28 @@ def main():
     # Dataset
     # ------------------------------------------------------------------
     print("Loading dataset ...")
-    if args.dataset_name:
+    if args.train_file or args.dataset_name == "hh_local":
+        import json
+        from datasets import Dataset as HFDataset
+        train_path = args.train_file
+        if train_path is None:
+            raise RuntimeError(
+                "--dataset_name hh_local requires --train_file to be set."
+            )
+        print(f"  Loading training data from {train_path} ...")
+        with open(train_path) as f:
+            raw = [json.loads(line) for line in f]
+        train_dataset = HFDataset.from_list(raw)
+        print(f"  {len(train_dataset)} training examples loaded.")
+        if args.eval_file:
+            print(f"  Loading eval data from {args.eval_file} ...")
+            with open(args.eval_file) as f:
+                eval_raw = [json.loads(line) for line in f]
+            eval_dataset = HFDataset.from_list(eval_raw)
+            print(f"  {len(eval_dataset)} eval examples loaded.")
+        else:
+            eval_dataset = None
+    elif args.dataset_name:
         train_dataset = _load_split(args.dataset_name, "train")
         eval_dataset  = _load_split(args.dataset_name, args.eval_split)
         if train_dataset is None:
@@ -165,7 +212,7 @@ def main():
             )
     else:
         print(
-            "  [INFO] No --dataset_name given. "
+            "  [INFO] No --train_file or --dataset_name given. "
             "Using built-in 3-sample toy data.\n"
             "         This is a smoke test only; use a real dataset for training."
         )
@@ -198,6 +245,8 @@ def main():
 
     training_args = DPOConfig(
         output_dir=args.output_dir,
+        # Reproducibility
+        seed=args.seed,
         # Optimisation
         learning_rate=args.lr,
         num_train_epochs=args.epochs,
@@ -207,6 +256,7 @@ def main():
         beta=args.beta,
         # Sequence lengths
         max_length=args.max_length,
+        max_prompt_length=args.max_prompt_length,
         # Precision
         bf16=torch.cuda.is_bf16_supported(),
         fp16=(
@@ -219,8 +269,9 @@ def main():
         # policy and a reference forward pass over chosen+rejected sequences.
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        # Logging
+        # Logging — §1.6: save TensorBoard logs under ./runs/<run_name>/
         logging_steps=10,
+        logging_dir=f"./runs/{args.output_dir}",
         save_steps=100,
         eval_strategy="epoch" if eval_dataset is not None else "no",
         report_to=["tensorboard"],

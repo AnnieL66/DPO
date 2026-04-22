@@ -12,6 +12,9 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 pip install -r "$(dirname "$0")/requirements.txt"
 
+echo "Installing project-specific extras ..."
+pip install "evalplus==0.3.1" wandb human-eval
+
 echo ""
 echo "Setup complete. Activate with:"
 echo "  source $VENV_DIR/bin/activate"

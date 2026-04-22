@@ -35,6 +35,10 @@ DATASET_TRUNCATION_MODE: Dict[str, str] = {
 
 SUPPORTED_DATASETS: tuple = ("hh", "shp")
 
+# Pin the same HH revision used by shared/prepare_hh_split.py so that
+# training and eval data come from the identical snapshot of the dataset.
+HH_DATASET_REVISION = "09be8c5bbc57cb3887f3a9732ad6aa7ec602a1fa"
+
 
 # ---------------------------------------------------------------------------
 # Sample data (plain string format, used for smoke-tests)
@@ -142,7 +146,9 @@ def get_hh(split: str, silent: bool = False) -> List[Dict]:
     import tqdm
 
     print(f"Loading Anthropic HH ({split} split) ...")
-    dataset = load_dataset("Anthropic/hh-rlhf", split=split)
+    dataset = load_dataset(
+        "Anthropic/hh-rlhf", revision=HH_DATASET_REVISION, split=split
+    )
     print(f"  {len(dataset)} rows loaded.")
 
     data: List[Dict] = []

@@ -78,7 +78,7 @@ pytest tests/test_dpo.py -v
 
 | Group | Count | What it covers |
 |---|---|---|
-| `TestBatchLogps` | 8 | shape, sign, prompt masking, length normalization, dtype guard |
+| `TestBatchLogps` | 8 | shape, sign, prompt masking, sum scaling with length, dtype guard |
 | `TestConcatenatedForward` | 3 | correctness vs separate calls, unequal-length sequences |
 | `TestDPOLoss` | 7 | manual math, neutral = log(2), loss ordering, detach, β scaling |
 | `TestTrainingStep` | 8 | forward, backward, gradient direction, ref model unchanged |
@@ -205,13 +205,13 @@ At the start of training when `πθ = πref`, every log-ratio is 0, the reward m
 
 ### Log-probability computation
 
-Sequence-level log-probabilities are computed as the **mean per-token log-prob** (not the sum). For a response of length T:
+Sequence-level log-probabilities are computed as the **sum of token log-probs** (not the mean), matching Eq. 7 of Rafailov et al. 2023:
 
 ```
-log P(y|x) = (1/T) × Σ log πθ(y_t | x, y_1..y_{t-1})
+log P(y|x) = Σ log πθ(y_t | x, y_1..y_{t-1})
 ```
 
-Using the mean instead of the sum removes length bias: a 400-token response and a 40-token response are on the same scale, so the reward margin reflects quality rather than sequence length. This matters especially for code generation where correct solutions can vary widely in length.
+Using the sum is the vanilla DPO formulation and keeps the comparison with GRPO on the same footing. The `_batch_logps` function accepts an `average_log_prob` flag (default `False`) if length-normalised behaviour is needed.
 
 ### Model architecture
 
