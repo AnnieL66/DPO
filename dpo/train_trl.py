@@ -99,6 +99,14 @@ def parse_args():
     p.add_argument("--lr",               type=float, default=5e-7)
     p.add_argument("--epochs",           type=int,   default=3)
     p.add_argument("--batch_size",       type=int,   default=4)
+    p.add_argument("--eval_batch_size",  type=int,   default=1,
+                   help=(
+                       "Per-device batch size for evaluation (default: 1). "
+                       "Keep this at 1 on L4/A10 GPUs: DPO eval runs two forward "
+                       "passes (policy + reference) over chosen+rejected sequences "
+                       "without gradient checkpointing, so peak memory is "
+                       "2 × eval_batch_size × max_length × vocab logits in fp32."
+                   ))
     p.add_argument("--grad_accum",       type=int,   default=8)
     p.add_argument("--max_length",       type=int,   default=768)
     p.add_argument("--max_prompt_length", type=int,  default=256,
@@ -250,6 +258,11 @@ def main():
         learning_rate=args.lr,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
+        # Eval batch=1 to avoid OOM: DPO eval runs two forward passes (policy +
+        # reference) over 2×batch chosen+rejected sequences without gradient
+        # checkpointing, then upcasts logits to fp32.  On L4 (22 GB) with
+        # vocab=152k and max_length=768, batch=4 needs ~7.5 GB for logits alone.
+        per_device_eval_batch_size=args.eval_batch_size,
         gradient_accumulation_steps=args.grad_accum,
         # DPO-specific
         beta=args.beta,
