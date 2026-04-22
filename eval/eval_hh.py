@@ -124,13 +124,13 @@ def mean_response_length(policy, policy_tok, prompts):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_path", required=True,
+    p.add_argument("--model", required=True,
                    help="HF model name or local path to the policy checkpoint")
     p.add_argument("--eval_file", default="hh_eval_500.jsonl",
                    help="Path to hh_eval_500.jsonl")
     p.add_argument("--rm_path", default=None,
                    help="Path to the reward model (optional; skips M2 if absent)")
-    p.add_argument("--output", default="eval_results.json",
+    p.add_argument("--out", default="eval_results.json",
                    help="Path to write the JSON results file")
     p.add_argument("--n_pairs", type=int, default=500,
                    help="Number of eval pairs to use (default: all 500)")
@@ -151,9 +151,9 @@ def main():
     print(f"Device: {device}")
 
     # Load policy
-    print(f"Loading policy: {args.model_path}")
+    print(f"Loading policy: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_path, trust_remote_code=True
+        args.model, trust_remote_code=True
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -162,12 +162,12 @@ def main():
         from transformers import BitsAndBytesConfig
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path, quantization_config=bnb, device_map="auto",
+            args.model, quantization_config=bnb, device_map="auto",
             trust_remote_code=True,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path,
+            args.model,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             device_map="auto",
             trust_remote_code=True,
@@ -231,9 +231,11 @@ def main():
         print(f"  M3       = {results['M3_mean_response_length']:.1f} tokens")
 
     # Write results
-    with open(args.output, "w") as f:
+    import os
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults written to {args.output}")
+    print(f"\nResults written to {args.out}")
     print(json.dumps(results, indent=2))
 
 

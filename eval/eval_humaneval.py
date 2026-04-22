@@ -90,10 +90,10 @@ def stop_at_function_boundary(completion: str) -> str:
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_path", required=True,
+    p.add_argument("--model", required=True,
                    help="HF model name or local path to the policy checkpoint")
-    p.add_argument("--output_dir", default="eval_humaneval_out",
-                   help="Directory to write samples.jsonl and results")
+    p.add_argument("--out", default="results/humaneval_results.json",
+                   help="Path to write the JSON results file")
     p.add_argument("--max_new_tokens", type=int, default=512)
     p.add_argument("--use_4bit", action="store_true")
     return p.parse_args()
@@ -101,15 +101,17 @@ def parse_args():
 
 def main():
     args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
-    samples_path = os.path.join(args.output_dir, "samples.jsonl")
+    # Derive a samples directory from the output file location.
+    out_dir = os.path.dirname(args.out) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    samples_path = os.path.join(out_dir, "samples.jsonl")
 
     # ------------------------------------------------------------------
     # Load model
     # ------------------------------------------------------------------
-    print(f"Loading model: {args.model_path}")
+    print(f"Loading model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_path, trust_remote_code=True
+        args.model, trust_remote_code=True
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -118,12 +120,12 @@ def main():
         from transformers import BitsAndBytesConfig
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path, quantization_config=bnb, device_map="auto",
+            args.model, quantization_config=bnb, device_map="auto",
             trust_remote_code=True,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path,
+            args.model,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             device_map="auto",
             trust_remote_code=True,
@@ -185,27 +187,30 @@ def main():
         print(result.stdout)
         if result.returncode != 0:
             print("evalplus stderr:", result.stderr)
-        # evalplus writes eval_results.json next to samples.jsonl
-        evalplus_results = os.path.join(args.output_dir, "eval_results.json")
+        # evalplus writes results as <samples_stem>_eval_results.json
+        # next to samples.jsonl (e.g. samples_eval_results.json).
+        samples_stem = os.path.splitext(samples_path)[0]
+        evalplus_results = samples_stem + "_eval_results.json"
+        pass_at_1 = None
         if os.path.exists(evalplus_results):
             with open(evalplus_results) as f:
                 eval_data = json.load(f)
-            pass_at_1 = eval_data.get("pass@1", None)
-        else:
-            pass_at_1 = None
+            # evalplus reports pass@1 under the "humaneval" key
+            he = eval_data.get("humaneval", eval_data)
+            pass_at_1 = he.get("pass@1", None)
     else:
         from human_eval.evaluation import evaluate_functional_correctness
         eval_data = evaluate_functional_correctness(samples_path)
         pass_at_1 = eval_data.get("pass@1", None)
 
     summary = {
-        "model_path": args.model_path,
+        "model": args.model,
         "n_problems": len(problems),
         "M4_humaneval_pass_at_1": pass_at_1,
     }
-    with open(results_path, "w") as f:
+    with open(args.out, "w") as f:
         json.dump(summary, f, indent=2)
-    print(f"\nResults written to {results_path}")
+    print(f"\nResults written to {args.out}")
     print(json.dumps(summary, indent=2))
 
 

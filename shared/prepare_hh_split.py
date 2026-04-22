@@ -6,20 +6,19 @@ Run this script in both repos. Output files must match byte-for-byte
 Run: python shared/prepare_hh_split.py
 """
 import json
-import re
 from datasets import load_dataset
 
 SEED = 42
 N_TRAIN = 3000
 N_EVAL = 500
-DATASET_REVISION = "09be8c5bbc57cb3887f3a9732ad6aa7ec602a1fa"  # pin the HF revision
+DATASET_REVISION = "09be8c5bbc57cb3887f3a9732ad6aa7ec602a1fa"
 
 
 def parse_hh_example(text: str):
     """Split an hh-rlhf transcript into (prompt, final_response).
 
-    The prompt is everything up to and including the last '\\n\\nAssistant:'.
-    The final response is everything after it.
+    The prompt is everything up to and including the last
+    '\\n\\nAssistant:'. The final response is everything after it.
     """
     marker = "\n\nAssistant:"
     idx = text.rfind(marker)
@@ -54,7 +53,9 @@ def build_split(split_name, n, out_path):
         if p is not None:
             pairs.append(p)
         i += 1
-    assert len(pairs) == n, f"only got {len(pairs)} valid pairs, wanted {n}"
+    assert len(pairs) == n, (
+        f"only got {len(pairs)} valid pairs, wanted {n}"
+    )
     with open(out_path, "w") as f:
         for p in pairs:
             f.write(json.dumps(p) + "\n")
