@@ -251,6 +251,13 @@ def main():
             "--dataset", "humaneval",
             "--samples", eval_samples_path,
         ]
+        # Delete any stale cached result file so evalplus always re-evaluates.
+        stem = os.path.splitext(eval_samples_path)[0]
+        stale = stem + "_eval_results.json"
+        if os.path.exists(stale):
+            os.remove(stale)
+            print(f"Removed stale cache: {stale}")
+
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         # Always print full subprocess output so failures are visible.
@@ -263,39 +270,22 @@ def main():
         if result.returncode != 0:
             print(f"WARNING: evalplus.evaluate exited with code {result.returncode}")
 
-        # evalplus may write the result file under several naming conventions
-        # depending on the installed version.  Search for all candidates.
-        stem = os.path.splitext(eval_samples_path)[0]
-        candidates = [
-            stem + "_eval_results.json",                     # evalplus 0.3.x
-            eval_samples_path + "_eval_results.json",        # some variants
-            stem + "-evalplus_eval_results.json",            # evalplus 0.4+
-            stem + "_eval_results.json".replace("/", os.sep),
-        ]
-        # Also glob for any *eval_results* file in the same directory.
-        import glob as _glob
-        candidates += _glob.glob(os.path.join(out_dir, "*eval_results*.json"))
+        # Newer evalplus versions store per-problem data in the JSON file and
+        # only print the aggregate pass@1 to stdout.  Parse stdout directly —
+        # it is the authoritative source regardless of evalplus version.
+        # The first "pass@1:" line is the base HumanEval score (standard M4).
+        # The second is the stricter evalplus+ score (base + extra tests).
+        for line in result.stdout.splitlines():
+            if line.strip().startswith("pass@1:"):
+                try:
+                    pass_at_1 = float(line.split(":")[1].strip())
+                    break  # take first occurrence = base HumanEval pass@1
+                except (ValueError, IndexError):
+                    pass
 
-        result_file = None
-        for c in candidates:
-            if os.path.exists(c):
-                result_file = c
-                break
-
-        if result_file is None:
-            print(f"ERROR: evalplus result file not found. Searched:\n  " +
-                  "\n  ".join(candidates))
-            print("Files in output dir:")
-            for f in os.listdir(out_dir):
-                print(f"  {f}")
-        else:
-            print(f"Reading evalplus results from: {result_file}")
-            with open(result_file) as f:
-                eval_data = json.load(f)
-            he = eval_data.get("humaneval", eval_data)
-            pass_at_1 = he.get("pass@1", None)
-            if pass_at_1 is None:
-                print(f"WARNING: 'pass@1' key not found. JSON keys: {list(he.keys())}")
+        if pass_at_1 is None:
+            print("ERROR: could not parse pass@1 from evalplus output.")
+            print("Full stdout was:", repr(result.stdout))
     else:
         from human_eval.evaluation import evaluate_functional_correctness
         eval_data = evaluate_functional_correctness(eval_samples_path)
