@@ -243,6 +243,8 @@ def main():
     # ------------------------------------------------------------------
     print("Running pass@1 evaluation ...")
 
+    pass_at_1 = None
+
     if use_evalplus:
         cmd = [
             sys.executable, "-m", "evalplus.evaluate",
@@ -250,18 +252,50 @@ def main():
             "--samples", eval_samples_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        print(result.stdout)
+
+        # Always print full subprocess output so failures are visible.
+        if result.stdout:
+            print("=== evalplus stdout ===")
+            print(result.stdout)
+        if result.stderr:
+            print("=== evalplus stderr ===")
+            print(result.stderr)
         if result.returncode != 0:
-            print("evalplus stderr:", result.stderr)
-        # evalplus writes <samples_stem>_eval_results.json next to the samples file
+            print(f"WARNING: evalplus.evaluate exited with code {result.returncode}")
+
+        # evalplus may write the result file under several naming conventions
+        # depending on the installed version.  Search for all candidates.
         stem = os.path.splitext(eval_samples_path)[0]
-        evalplus_results = stem + "_eval_results.json"
-        pass_at_1 = None
-        if os.path.exists(evalplus_results):
-            with open(evalplus_results) as f:
+        candidates = [
+            stem + "_eval_results.json",                     # evalplus 0.3.x
+            eval_samples_path + "_eval_results.json",        # some variants
+            stem + "-evalplus_eval_results.json",            # evalplus 0.4+
+            stem + "_eval_results.json".replace("/", os.sep),
+        ]
+        # Also glob for any *eval_results* file in the same directory.
+        import glob as _glob
+        candidates += _glob.glob(os.path.join(out_dir, "*eval_results*.json"))
+
+        result_file = None
+        for c in candidates:
+            if os.path.exists(c):
+                result_file = c
+                break
+
+        if result_file is None:
+            print(f"ERROR: evalplus result file not found. Searched:\n  " +
+                  "\n  ".join(candidates))
+            print("Files in output dir:")
+            for f in os.listdir(out_dir):
+                print(f"  {f}")
+        else:
+            print(f"Reading evalplus results from: {result_file}")
+            with open(result_file) as f:
                 eval_data = json.load(f)
             he = eval_data.get("humaneval", eval_data)
             pass_at_1 = he.get("pass@1", None)
+            if pass_at_1 is None:
+                print(f"WARNING: 'pass@1' key not found. JSON keys: {list(he.keys())}")
     else:
         from human_eval.evaluation import evaluate_functional_correctness
         eval_data = evaluate_functional_correctness(eval_samples_path)
