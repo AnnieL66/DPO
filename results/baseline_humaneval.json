@@ -1,0 +1,5 @@
+{
+  "model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "n_problems": 164,
+  "M4_humaneval_pass_at_1": 0.5548780487804879
+}
