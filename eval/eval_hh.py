@@ -26,10 +26,58 @@ python eval/eval_hh.py \
 
 import argparse
 import json
+import os
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def _load_model(model_path: str, use_4bit: bool = False):
+    """
+    Load a policy model from a HuggingFace model name or local path.
+
+    If the path contains adapter_config.json (a LoRA adapter checkpoint saved
+    by TRL's trainer.save_model()), the base model is loaded from the path
+    recorded in adapter_config.json and the adapter is merged in-memory before
+    returning.  This lets the eval scripts accept the raw training output
+    directory (e.g. ./qwen-coder-dpo-hh) without a separate merge step.
+    """
+    torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
+    adapter_cfg = os.path.join(model_path, "adapter_config.json") if os.path.isdir(model_path) else ""
+    is_peft = os.path.exists(adapter_cfg)
+
+    if is_peft:
+        with open(adapter_cfg) as f:
+            base_name = json.load(f)["base_model_name_or_path"]
+        print(f"  Detected LoRA adapter. Base model: {base_name}")
+        from peft import PeftModel
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
+            base = AutoModelForCausalLM.from_pretrained(
+                base_name, quantization_config=bnb, device_map="auto", trust_remote_code=True
+            )
+        else:
+            base = AutoModelForCausalLM.from_pretrained(
+                base_name, torch_dtype=torch_dtype, device_map="auto", trust_remote_code=True
+            )
+        model = PeftModel.from_pretrained(base, model_path)
+        model = model.merge_and_unload()
+        print("  Adapter merged into base model.")
+    else:
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path, quantization_config=bnb, device_map="auto", trust_remote_code=True
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path, torch_dtype=torch_dtype, device_map="auto", trust_remote_code=True
+            )
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +198,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # Load policy
+    # Load policy (handles both full models and LoRA adapter checkpoints)
     print(f"Loading policy: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(
         args.model, trust_remote_code=True
@@ -158,20 +206,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if args.use_4bit:
-        from transformers import BitsAndBytesConfig
-        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, quantization_config=bnb, device_map="auto",
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+    model = _load_model(args.model, use_4bit=args.use_4bit)
     model.eval()
 
     results = {}
