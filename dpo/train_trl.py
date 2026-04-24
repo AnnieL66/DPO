@@ -264,6 +264,7 @@ def main():
         seed=args.seed,
         # Optimisation
         learning_rate=args.lr,
+        lr_scheduler_type="constant",  # keep LR fixed; linear decay (default) halves effective LR to ~2.5e-7 by epoch 1
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         # Eval batch=1 to avoid OOM: DPO eval runs two forward passes (policy +
