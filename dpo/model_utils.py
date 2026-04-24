@@ -59,8 +59,8 @@ def disable_dropout(model: nn.Module) -> None:
 # then zeroing it is misleading, so we keep the config consistent with
 # the actual runtime behaviour.
 LORA_CONFIG = LoraConfig(
-    r=16,
-    lora_alpha=32,
+    r=8,
+    lora_alpha=16,
     lora_dropout=0.0,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
