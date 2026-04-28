@@ -46,6 +46,7 @@ def preference_accuracy(model, tokenizer, pairs):
 
 
 def load_policy(model_path, dtype):
+    model_path = os.path.abspath(model_path)
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -83,6 +84,7 @@ def load_policy(model_path, dtype):
 
 
 def load_rm(base_model_name, rm_path, dtype):
+    rm_path = os.path.abspath(rm_path)
     tok = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
