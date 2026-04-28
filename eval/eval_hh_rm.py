@@ -85,22 +85,30 @@ def load_policy(model_path, dtype):
 
 def load_rm(base_model_name, rm_path, dtype):
     rm_path = os.path.abspath(rm_path)
+    if not os.path.isdir(rm_path):
+        raise FileNotFoundError(
+            f"RM checkpoint not found: {rm_path}\n"
+            "Make sure --rm_path points to a local directory."
+        )
+
     tok = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    base = AutoModelForSequenceClassification.from_pretrained(
-        base_model_name,
-        num_labels=1,
-        torch_dtype=dtype,
-        trust_remote_code=True,
-    ).cuda().eval()
+    is_peft = os.path.exists(os.path.join(rm_path, "adapter_config.json"))
 
-    try:
+    if is_peft:
+        base = AutoModelForSequenceClassification.from_pretrained(
+            base_model_name,
+            num_labels=1,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+        ).cuda().eval()
         rm = PeftModel.from_pretrained(base, rm_path).eval()
-    except Exception:
+    else:
         rm = AutoModelForSequenceClassification.from_pretrained(
             rm_path,
+            num_labels=1,
             torch_dtype=dtype,
             trust_remote_code=True,
         ).cuda().eval()
