@@ -22,9 +22,8 @@ Usage
     # Load from the deterministic 3k JSONL split (recommended for this project):
     python -m dpo.train_trl --train_file hh_train_3k.jsonl
 
-    # Named built-in datasets (hh or shp) — uses custom prompt extraction:
+    # Named built-in dataset — uses custom prompt extraction:
     python -m dpo.train_trl --dataset_name hh
-    python -m dpo.train_trl --dataset_name shp
 
     # Any HuggingFace Hub dataset that already has prompt/chosen/rejected cols:
     python -m dpo.train_trl --dataset_name my-org/my-dpo-dataset
@@ -45,7 +44,7 @@ from peft import get_peft_model
 from .data_utils import build_trl_dataset, SAMPLE_PREFERENCE_DATA
 from .model_utils import LORA_CONFIG, load_tokenizer
 
-BUILTIN_DATASETS = ("hh", "hh_local", "shp")
+BUILTIN_DATASETS = ("hh", "hh_local")
 
 
 def parse_args():
@@ -77,7 +76,7 @@ def parse_args():
         "--dataset_name",
         default=None,
         help=(
-            "Dataset to train on. Use 'hh' or 'shp' for the built-in loaders, "
+            "Dataset to train on. Use 'hh' for the built-in loader, "
             "'hh_local' to use --train_file/--eval_file local JSONL files, "
             "or a HuggingFace Hub dataset name with 'prompt'/'chosen'/'rejected' "
             "columns. Omit to run a smoke test with the 3-example built-in data."
@@ -170,9 +169,9 @@ def _load_split(dataset_name: str, split: str):
     """
     Load one split of a dataset, routing to the correct loader.
 
-    If dataset_name is a built-in name ("hh" or "shp"), the custom loader
-    is used, which extracts the prompt correctly from the raw conversation
-    format.  Passing "hh" directly as an HF Hub name would fail because
+    If dataset_name is "hh", the custom loader is used, which extracts the
+    prompt correctly from the raw conversation format.  Passing "hh" directly
+    as an HF Hub name would fail because
     the raw Anthropic/hh-rlhf dataset does not have a "prompt" column.
 
     For any other string, it is treated as an HF Hub dataset name and must
@@ -194,9 +193,6 @@ def _load_split(dataset_name: str, split: str):
 def main():
     args = parse_args()
 
-    # ------------------------------------------------------------------
-    # Dataset
-    # ------------------------------------------------------------------
     print("Loading dataset ...")
     if args.train_file or args.dataset_name == "hh_local":
         if args.train_file is None:
@@ -204,10 +200,9 @@ def main():
                 "--dataset_name hh_local requires --train_file to be set."
             )
         # Route through data_utils.get_hh_local so the loader lives in one place.
-        train_data = build_trl_dataset(
+        train_dataset = build_trl_dataset(
             dataset_name="hh_local", split="train", filepath=args.train_file
         )
-        train_dataset = train_data
         if args.eval_file:
             eval_dataset = build_trl_dataset(
                 dataset_name="hh_local", split="eval", filepath=args.eval_file
@@ -234,14 +229,8 @@ def main():
     if eval_dataset is not None:
         print(f"  Eval  examples: {len(eval_dataset)}")
 
-    # ------------------------------------------------------------------
-    # Tokenizer
-    # ------------------------------------------------------------------
     tokenizer = load_tokenizer(args.model_name)
 
-    # ------------------------------------------------------------------
-    # Model
-    # ------------------------------------------------------------------
     print("Loading model ...")
     model = build_model_for_trl(
         args.model_name,
@@ -249,9 +238,6 @@ def main():
         use_4bit=args.use_4bit,
     )
 
-    # ------------------------------------------------------------------
-    # DPOConfig  (hyperparameters from proposal Section 2.7, Method 2)
-    # ------------------------------------------------------------------
     from trl import DPOTrainer, DPOConfig
     import inspect
 
@@ -307,25 +293,18 @@ def main():
 
     training_args = DPOConfig(**_dpo_config_kwargs)
 
-    # ------------------------------------------------------------------
-    # DPOTrainer
-    #
-    # ref_model=None: TRL uses the base weights of the PEFT model for the
-    # reference forward pass by calling model.disable_adapter().  This
-    # means we load the model once instead of twice.
-    #
-    # processing_class vs tokenizer: TRL renamed the parameter from
-    # "tokenizer" to "processing_class" in 0.12.  We try the new name
-    # first and fall back gracefully for older installs.
-    # ------------------------------------------------------------------
+    # ref_model=None: TRL reuses the PEFT base weights via disable_adapter(),
+    # so we only load the model once.
+    # processing_class was renamed from tokenizer in TRL 0.12 — we try the new
+    # name first and fall back for older installs.
     trainer_kwargs = dict(
-        model=model,   # already PEFT-wrapped; TRL will use disable_adapter() for ref
+        model=model,
         ref_model=None,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        # peft_config intentionally omitted: model is pre-wrapped above.
-        # Passing it here would cause TRL to double-wrap the adapters.
+        # peft_config omitted — model is already wrapped; passing it would
+        # cause TRL to double-wrap the LoRA adapters.
     )
     # Pass max_prompt_length directly to DPOTrainer for older TRL versions
     # that don't support it in DPOConfig.
@@ -340,9 +319,6 @@ def main():
         # TRL < 0.12 uses "tokenizer" instead of "processing_class".
         trainer = DPOTrainer(**trainer_kwargs, tokenizer=tokenizer)
 
-    # ------------------------------------------------------------------
-    # Train
-    # ------------------------------------------------------------------
     print("Starting DPO training ...")
     print(f"  beta        = {args.beta}  (KL penalty)")
     print(f"  lr          = {args.lr}")

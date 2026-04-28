@@ -16,7 +16,7 @@ Coverage
   TestTrainingStep       — forward pass, backward pass, gradient direction,
                            reference-model-mode guard, metrics dict
   TestNumericalStability — extreme logit values, uniform logits
-  TestDataUtils          — SHP score filter, dataset schema validation
+  TestDataUtils          — dataset schema validation, raw data
 """
 
 import math
@@ -688,88 +688,6 @@ class TestNumericalStability:
 
 class TestDataUtils:
     """Unit tests for data loading and preprocessing utilities."""
-
-    def test_shp_skips_zero_scores(self):
-        """
-        Rows where either score is zero or negative must be filtered out.
-        Dividing by zero raises ZeroDivisionError; dividing by a negative
-        number inverts the sign of the ratio, causing strong preference pairs
-        to be silently discarded.
-
-        load_dataset is imported lazily inside get_shp, so we patch it at
-        its definition site (datasets.load_dataset) rather than trying to
-        patch a module-level attribute that does not exist.
-        """
-        from dpo.data_utils import get_shp
-        import unittest.mock as mock
-
-        fake_rows = [
-            # Should be kept: both positive, ratio = 4/2 = 2.0 >= 2.0
-            {
-                "score_A": 4,
-                "score_B": 2,
-                "labels": 1,
-                "history": "test",
-                "human_ref_A": "good",
-                "human_ref_B": "bad",
-            },
-            # Should be skipped: score_B is 0
-            {
-                "score_A": 5,
-                "score_B": 0,
-                "labels": 1,
-                "history": "test",
-                "human_ref_A": "good",
-                "human_ref_B": "bad",
-            },
-            # Should be skipped: score_A is negative
-            {
-                "score_A": -1,
-                "score_B": 3,
-                "labels": 1,
-                "history": "test",
-                "human_ref_A": "good",
-                "human_ref_B": "bad",
-            },
-        ]
-
-        with mock.patch("datasets.load_dataset", return_value=fake_rows):
-            result = get_shp("train", min_score_ratio=2.0, silent=True)
-
-        assert len(result) == 1, (
-            f"Expected 1 pair to survive filtering, got {len(result)}"
-        )
-
-    def test_shp_ratio_filter(self):
-        """Pairs below the minimum score ratio are discarded."""
-        from dpo.data_utils import get_shp
-        import unittest.mock as mock
-
-        fake_rows = [
-            # ratio = 3/2 = 1.5 < 2.0 — should be skipped
-            {
-                "score_A": 3,
-                "score_B": 2,
-                "labels": 1,
-                "history": "q",
-                "human_ref_A": "a",
-                "human_ref_B": "b",
-            },
-            # ratio = 10/2 = 5.0 >= 2.0 — should be kept
-            {
-                "score_A": 10,
-                "score_B": 2,
-                "labels": 1,
-                "history": "q",
-                "human_ref_A": "a",
-                "human_ref_B": "b",
-            },
-        ]
-
-        with mock.patch("datasets.load_dataset", return_value=fake_rows):
-            result = get_shp("train", min_score_ratio=2.0, silent=True)
-
-        assert len(result) == 1
 
     def test_build_trl_dataset_validates_schema(self):
         """

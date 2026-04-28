@@ -17,7 +17,7 @@ DPO/
 │   ├── train_trl.py         # TRL DPOTrainer entry point (recommended)
 │   └── toy_example.py       # CPU-only loss verification script
 ├── tests/
-│   └── test_dpo.py          # 36-test pytest suite (no GPU required)
+│   └── test_dpo.py          # 34-test pytest suite (no GPU required)
 ├── requirements.txt
 └── setup_env.sh             # One-command environment setup
 ```
@@ -74,7 +74,7 @@ This runs three checks:
 pytest tests/test_dpo.py -v
 ```
 
-36 tests across 7 groups:
+34 tests across 7 groups:
 
 | Group | Count | What it covers |
 |---|---|---|
@@ -83,10 +83,10 @@ pytest tests/test_dpo.py -v
 | `TestDPOLoss` | 7 | manual math, neutral = log(2), loss ordering, detach, β scaling |
 | `TestTrainingStep` | 8 | forward, backward, gradient direction, ref model unchanged |
 | `TestNumericalStability` | 4 | extreme logits (±1e6), uniform logits, logsigmoid stability |
-| `TestDataUtils` | 5 | SHP score filters, HF Hub schema validation, raw data |
+| `TestDataUtils` | 3 | HF Hub schema validation, raw data, sample data |
 | `TestToyExample` | 1 | `run_all_checks()` end-to-end |
 
-All 36 tests pass on CPU in under 2 seconds.
+All 34 tests pass on CPU in under 2 seconds.
 
 ---
 
@@ -106,15 +106,6 @@ python -m dpo.train_trl
 python -m dpo.train_trl \
   --dataset_name hh \
   --output_dir qwen-coder-dpo-hh \
-  --epochs 3
-```
-
-### Train on Stanford Human Preferences (SHP)
-
-```bash
-python -m dpo.train_trl \
-  --dataset_name shp \
-  --output_dir qwen-coder-dpo-shp \
   --epochs 3
 ```
 
@@ -153,7 +144,7 @@ python -m dpo.train_trl \
 |---|---|---|
 | `--model_name` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
 | `--output_dir` | `qwen-coder-dpo` | Directory for checkpoints and final model |
-| `--dataset_name` | _(none)_ | `hh`, `shp`, or any HF Hub dataset name with `prompt`/`chosen`/`rejected` columns. Omit to use the 3-example built-in sample data. |
+| `--dataset_name` | _(none)_ | `hh`, `hh_local`, or any HF Hub dataset name with `prompt`/`chosen`/`rejected` columns. Omit to use the 3-example built-in sample data. |
 | `--eval_split` | `test` | Eval split name. Some datasets use `validation` instead of `test`. |
 | `--beta` | `0.1` | KL-divergence penalty strength |
 | `--lr` | `5e-7` | Learning rate |
@@ -169,7 +160,7 @@ python -m dpo.train_trl \
 Logs are written to TensorBoard every 10 steps:
 
 ```bash
-tensorboard --logdir qwen-coder-dpo
+tensorboard --logdir runs/qwen-coder-dpo
 ```
 
 Key metrics to watch:
@@ -216,8 +207,7 @@ Using the sum is the vanilla DPO formulation and keeps the comparison with GRPO 
 ### Model architecture
 
 - **Policy model** — Qwen2.5-Coder-1.5B-Instruct with LoRA adapters (r=16, α=32) on all attention and MLP projection layers. Only ~4.5M of 1.5B parameters are trainable (~0.3%).
-- **Reference model** — same base checkpoint, no LoRA, all parameters frozen, always in eval mode.
-- Both models share no weights at runtime. Two copies at bfloat16 ≈ 6 GB total VRAM.
+- **Reference model** — same base checkpoint, accessed via `model.disable_adapter()` (TRL's `ref_model=None` path), so only one copy of the base weights is loaded. This cuts VRAM roughly in half compared to two separate model objects.
 
 ### Efficiency
 
@@ -241,7 +231,7 @@ The loader validates that these three columns exist and raises a clear error if 
 
 ### Option 2: Add a built-in loader
 
-To add a new named dataset like `hh` or `shp`, edit `dpo/data_utils.py`:
+To add a new named dataset like `hh`, edit `dpo/data_utils.py`:
 
 **Step 1 — Write a loader** that returns a list of dicts with keys `prompt`, `chosen`, `rejected` (all plain strings):
 
@@ -265,24 +255,14 @@ def get_my_dataset(split: str = "train", silent: bool = False) -> List[Dict]:
 def load_dataset_by_name(name: str, split: str, **kwargs):
     if name == "hh":
         return get_hh(split, **kwargs)
-    elif name == "shp":
-        return get_shp(split, **kwargs)
+    elif name == "hh_local":
+        return get_hh_local(split, **kwargs)
     elif name == "my_dataset":
         return get_my_dataset(split, **kwargs)
     ...
 ```
 
-**Step 3 — Register the truncation mode** in `DATASET_TRUNCATION_MODE`:
-
-```python
-DATASET_TRUNCATION_MODE = {
-    "hh":         "keep_end",    # multi-turn: preserve the most recent context
-    "shp":        "keep_start",  # single question: preserve the question
-    "my_dataset": "keep_start",
-}
-```
-
-**Step 4 — Train:**
+**Step 3 — Train:**
 
 ```bash
 python -m dpo.train_trl --dataset_name my_dataset --output_dir my-dataset-dpo

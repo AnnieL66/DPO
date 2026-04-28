@@ -1,15 +1,15 @@
 """
 dpo_loss.py
---------------------
+-----------
 Core DPO mathematics for code generation.
 
 Public API
     _batch_logps         — sequence-level log P(response | prompt) with optional
-                           length normalisation (NEW: average_log_prob param)
+                           length normalisation
     compute_log_probs    — thin wrapper for single-sequence callers
-    concatenated_forward — ONE forward pass for chosen+rejected
+    concatenated_forward — single forward pass over chosen+rejected concatenated
     dpo_loss             — exact DPO objective from Rafailov et al. 2023
-    training_step        — full forward+backward-ready step for one batch
+    training_step        — forward+backward-ready step for one batch
 """
 
 from typing import Tuple
@@ -49,21 +49,20 @@ def _batch_logps(
         f"Shape mismatch: logits {logits.shape}, labels {labels.shape}"
     )
 
-    # Causal-LM shift: logit at position t predicts token at position t+1.
+    # Causal-LM shift: logit[t] predicts token[t+1].
     shift_logits = logits[:, :-1, :].contiguous()  # [B, L-1, V]
-    shift_labels = labels[:, 1:].contiguous()  # [B, L-1]
+    shift_labels = labels[:, 1:].contiguous()       # [B, L-1]
 
-    log_probs = F.log_softmax(shift_logits, dim=-1)  # [B, L-1, V]  (stable)
+    log_probs = F.log_softmax(shift_logits, dim=-1)  # [B, L-1, V]
 
-    # clamp(min=0): makes the gather valid even at -100 positions; those
-    # positions are multiplied by 0 via response_mask below.
+    # clamp(min=0) keeps the gather index valid at -100 positions;
+    # response_mask zeros out those positions afterward.
     token_log_probs = log_probs.gather(
         dim=-1,
         index=shift_labels.clamp(min=0).unsqueeze(-1),
     ).squeeze(-1)  # [B, L-1]
 
-    # Mask: 1 for real response tokens, 0 for prompt or padding (-100).
-    response_mask = (shift_labels != -100).float()  # [B, L-1]
+    response_mask = (shift_labels != -100).float()  # 1 for response, 0 for prompt/pad
 
     masked_sum = (token_log_probs * response_mask).sum(dim=-1)  # [B]
 
@@ -131,9 +130,8 @@ def concatenated_forward(
         dim=0,
     )
 
-    # Cast to float32 BEFORE log_softmax.
-    # bfloat16 has only 7 mantissa bits; log_softmax over Qwen's 152k vocab
-    # requires the extra precision of float32 to avoid noisy log-ratios.
+    # bfloat16 has only 7 mantissa bits — not enough precision for log_softmax
+    # over a 152k vocab. Casting to float32 here prevents noisy log-ratios.
     all_logits = model(input_ids=all_ids, attention_mask=all_mask).logits.to(
         torch.float32
     )
@@ -205,20 +203,18 @@ def dpo_loss(
     chosen_rewards   — [B] implicit rewards for chosen  (detached, for logging)
     rejected_rewards — [B] implicit rewards for rejected (detached, for logging)
     """
-    # Log-ratio: log [ πθ(y|x) / πref(y|x) ] = implicit reward / β
-    chosen_log_ratios = policy_chosen_logps - ref_chosen_logps  # [B]
+    chosen_log_ratios = policy_chosen_logps - ref_chosen_logps    # [B]
     rejected_log_ratios = policy_rejected_logps - ref_rejected_logps  # [B]
 
-    # Reward margin: how much more the policy prefers chosen over rejected
-    # relative to the reference model's opinion.
+    # How much more the policy favours chosen over rejected, relative to the reference.
     reward_margin = beta * (chosen_log_ratios - rejected_log_ratios)  # [B]
 
-    # F.logsigmoid(x) = log σ(x) = -softplus(-x)   — numerically stable.
-    # Manual log(sigmoid(x)) would underflow to -inf for large negative x.
+    # F.logsigmoid is numerically stable — manual log(sigmoid(x)) underflows to
+    # -inf for large negative x.
     loss = -F.logsigmoid(reward_margin).mean()
 
-    # Detach before returning: these are for logging only, not the loss graph.
-    chosen_rewards = (beta * chosen_log_ratios).detach()  # [B]
+    # Detached: used for logging only, not part of the gradient graph.
+    chosen_rewards = (beta * chosen_log_ratios).detach()    # [B]
     rejected_rewards = (beta * rejected_log_ratios).detach()  # [B]
 
     return loss, chosen_rewards, rejected_rewards
@@ -256,9 +252,8 @@ def training_step(
     loss    — scalar; call .backward() then optimizer.step()
     metrics — logging dict (all plain Python scalars)
     """
-    # The reference model must be in eval mode so its forward pass is
-    # deterministic. Active dropout would make log πref(y|x) stochastic,
-    # adding noise to the log-ratios that is not part of the DPO signal.
+    # Active dropout in the reference model adds noise to log πref(y|x) that
+    # isn't part of the DPO signal, which corrupts the log-ratios.
     assert not ref_model.training, (
         "ref_model must be in eval mode. "
         "Call ref_model.eval() at initialisation."
@@ -273,7 +268,6 @@ def training_step(
     rejected_mask = batch["rejected_attention_mask"].to(device)
     rejected_lbls = batch["rejected_labels"].to(device)
 
-    # --- Policy model (πθ): gradients flow through this pass ---
     policy_chosen_logps, policy_rejected_logps = concatenated_forward(
         policy_model,
         chosen_ids,
@@ -286,7 +280,6 @@ def training_step(
         average_log_prob=average_log_prob,
     )
 
-    # --- Reference model (πref): no computation graph ---
     with torch.no_grad():
         ref_chosen_logps, ref_rejected_logps = concatenated_forward(
             ref_model,
@@ -319,6 +312,8 @@ def training_step(
         # Monitor for policy collapse: if logps/chosen or logps/rejected
         # drifts toward -inf, the policy is assigning near-zero probability
         # to all responses (reward hacking or mode collapse).
+        # Watch these for collapse: drifting toward -inf means the policy
+        # is assigning near-zero probability to all responses.
         "logps/chosen": policy_chosen_logps.detach().mean().item(),
         "logps/rejected": policy_rejected_logps.detach().mean().item(),
     }

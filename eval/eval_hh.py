@@ -92,14 +92,12 @@ def sequence_logprob(model, tokenizer, prompt: str, response: str) -> float:
     prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
     prompt_len = prompt_ids.shape[1]
 
-    logits = model(full_ids).logits  # [1, T, V]
-    # logits[:, t] predicts token at position t+1
+    logits = model(full_ids).logits
     log_probs = F.log_softmax(logits[:, :-1].float(), dim=-1)
-    targets = full_ids[:, 1:]  # [1, T-1]
-    token_lp = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)  # [1, T-1]
+    targets = full_ids[:, 1:]
+    token_lp = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
 
-    # Keep only log-probs for response tokens (positions >= prompt_len in full_ids).
-    # Due to the shift above, response tokens start at index prompt_len - 1 of token_lp.
+    # The causal shift means response tokens start at index prompt_len - 1.
     response_lp = token_lp[:, prompt_len - 1:]
     return response_lp.sum().item()
 
@@ -114,36 +112,6 @@ def preference_accuracy(model, tokenizer, pairs):
         if (i + 1) % 50 == 0:
             print(f"  M1: {i+1}/{len(pairs)} pairs evaluated ...")
     return correct / len(pairs)
-
-
-# ---------------------------------------------------------------------------
-# M2: RM score of generations
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def rm_score_of_generations(policy, policy_tok, rm, rm_tok, prompts, device):
-    scores = []
-    for i, prompt in enumerate(prompts):
-        ids = policy_tok(prompt, return_tensors="pt").to(device)
-        gen = policy.generate(
-            **ids,
-            max_new_tokens=256,
-            do_sample=False,
-            pad_token_id=policy_tok.eos_token_id,
-        )
-        text = policy_tok.decode(
-            gen[0, ids.input_ids.shape[1]:], skip_special_tokens=True
-        )
-        rm_in = rm_tok(
-            prompt + text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=1024,
-        ).to(device)
-        scores.append(rm(**rm_in).logits.squeeze().item())
-        if (i + 1) % 50 == 0:
-            print(f"  M2/M3: {i+1}/{len(prompts)} prompts generated ...")
-    return scores
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +166,6 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # Load policy (handles both full models and LoRA adapter checkpoints)
     print(f"Loading policy: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(
         args.model, trust_remote_code=True
@@ -211,20 +178,17 @@ def main():
 
     results = {}
 
-    # M1: Preference accuracy
     print("Computing M1: preference accuracy ...")
     acc = preference_accuracy(model, tokenizer, pairs)
     results["M1_preference_accuracy"] = acc
     print(f"  M1 = {acc:.4f}")
 
-    # M3: Mean response length (also collected during M2 if RM available)
     if args.rm_path is None:
         print("Computing M3: mean response length (no RM path given, skipping M2) ...")
         avg_len = mean_response_length(model, tokenizer, [p["prompt"] for p in pairs])
         results["M3_mean_response_length"] = avg_len
         print(f"  M3 = {avg_len:.1f} tokens")
     else:
-        # M2 + M3 together (share the same generation pass)
         print(f"Loading reward model: {args.rm_path}")
         rm_tok = AutoTokenizer.from_pretrained(args.rm_path, trust_remote_code=True)
         rm = AutoModelForCausalLM.from_pretrained(
@@ -265,8 +229,6 @@ def main():
         print(f"  M2 median= {results['M2_rm_score_median']:.4f}")
         print(f"  M3       = {results['M3_mean_response_length']:.1f} tokens")
 
-    # Write results
-    import os
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)

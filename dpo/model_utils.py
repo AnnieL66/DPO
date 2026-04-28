@@ -35,29 +35,20 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 def disable_dropout(model: nn.Module) -> None:
     """
-    Set dropout probability to 0 on every Dropout layer in the model.
+    Zero out dropout on every layer in the model.
 
-    DPO computes log pi_theta(y|x) and log pi_ref(y|x) in separate forward
-    passes.  If dropout is active, the same input produces different logits
-    each call, adding stochastic noise to the log-ratios that is unrelated
-    to the preference signal.  Disabling dropout makes every pass
-    deterministic and ensures the log-ratios reflect only the model weights.
-
-    This is applied to the policy so that chosen and rejected log-probs
-    within the same concatenated forward pass are computed under identical
-    stochastic conditions.  The reference model is in eval() mode anyway,
-    which also disables dropout, but we call this on it for clarity.
+    DPO computes log πθ(y|x) and log πref(y|x) in separate passes. Active
+    dropout makes those values stochastic, injecting noise into the log-ratios
+    that has nothing to do with the preference signal. The reference is already
+    in eval() mode, but we apply this to both for consistency.
     """
     for module in model.modules():
         if isinstance(module, nn.Dropout):
             module.p = 0.0
 
 
-# LoRA config from the project proposal (Section 2.3).
-# lora_dropout is set to 0.0 because disable_dropout() is always called
-# immediately after wrapping the model.  Declaring a non-zero value and
-# then zeroing it is misleading, so we keep the config consistent with
-# the actual runtime behaviour.
+# lora_dropout=0.0 because we call disable_dropout() right after wrapping —
+# declaring a non-zero value and then zeroing it would be confusing.
 LORA_CONFIG = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -77,12 +68,10 @@ def load_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(
         model_name, trust_remote_code=True
     )
-    # Qwen models use EOS as the pad token by default.
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # Right-padding keeps response tokens at the same positions for all
-    # sequences in a batch, so the causal-LM shift in _batch_logps is
-    # consistent across examples.
+    # Right-padding ensures the causal-LM shift in _batch_logps is consistent
+    # across sequences in the same batch.
     tokenizer.padding_side = "right"
     return tokenizer
 
@@ -126,11 +115,8 @@ def load_policy_model(
     policy_model = get_peft_model(base_model, LORA_CONFIG)
     policy_model.print_trainable_parameters()
     disable_dropout(policy_model)
-
-    # Explicitly set to training mode.  from_pretrained returns the model
-    # in train mode by default, but making this explicit avoids any
-    # ambiguity when the function is called after eval() has been set
-    # elsewhere in a script.
+    # Explicit even though from_pretrained defaults to train mode — makes
+    # intent clear if this is called after the model was set to .eval() upstream.
     policy_model.train()
     return policy_model
 
@@ -154,7 +140,6 @@ def load_ref_model(
         trust_remote_code=True,
     )
 
-    # Hard-freeze: no parameter will ever accumulate a gradient.
     for param in ref_model.parameters():
         param.requires_grad = False
 

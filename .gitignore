@@ -3,3 +3,5 @@ qwen-coder-dpo-hh-lr5e6/
 **/checkpoint-*/
 **/optimizer.pt
 **/*.safetensors
+**/__pycache__/
+**/*.pyc

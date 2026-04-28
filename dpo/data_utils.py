@@ -5,9 +5,8 @@ Dataset utilities for the DPO pipeline.
 
 Supported datasets
 ------------------
-  "hh"  — Anthropic Helpful-Harmless  (Anthropic/hh-rlhf)
-  "shp" — Stanford Human Preferences  (stanfordnlp/SHP)
-  custom — pass raw_data directly (list of plain-string triplets)
+  "hh"    — Anthropic Helpful-Harmless  (Anthropic/hh-rlhf)
+  custom  — pass raw_data directly (list of plain-string triplets)
 
 Data format (all datasets normalised to this)
 ---------------------------------------------
@@ -16,25 +15,13 @@ Data format (all datasets normalised to this)
         "chosen":   "<preferred response text only>",
         "rejected": "<non-preferred response text only>"
     }
-
-Truncation modes
-----------------
-  keep_end   — HH: multi-turn conversations; preserve recent context
-               by dropping from the LEFT of the prompt when over-length.
-  keep_start — SHP: single question at the start; drop from the RIGHT.
 """
 
 from typing import Dict, List, Optional
 
 from datasets import Dataset as HFDataset
 
-DATASET_TRUNCATION_MODE: Dict[str, str] = {
-    "hh":       "keep_end",
-    "hh_local": "keep_end",   # same format as hh; preserve recent context
-    "shp":      "keep_start",
-}
-
-SUPPORTED_DATASETS: tuple = ("hh", "hh_local", "shp")
+SUPPORTED_DATASETS: tuple = ("hh", "hh_local")
 
 # Pin the same HH revision used by shared/prepare_hh_split.py so that
 # training and eval data come from the identical snapshot of the dataset.
@@ -226,64 +213,6 @@ def get_hh_local(
     return data
 
 
-def get_shp(
-    split: str,
-    min_score_ratio: float = 2.0,
-    silent: bool = False,
-) -> List[Dict]:
-    """
-    Load Stanford Human Preferences (stanfordnlp/SHP).
-
-    Filters pairs where the preference signal is too weak
-    (max_score / min_score < min_score_ratio).
-
-    Both scores must be strictly positive before the ratio is computed.
-    Reddit upvote scores can be zero or negative; dividing by a negative
-    number produces a ratio with the wrong sign (e.g. scores +5 and -3
-    give ratio -1.67, which is less than 2.0 and would be discarded even
-    though the preference is clearly strong). Requiring score > 0 for both
-    responses keeps the ratio semantically meaningful.
-    """
-    from datasets import load_dataset
-    import tqdm
-
-    print(f"Loading Stanford SHP ({split} split) ...")
-    dataset = load_dataset("stanfordnlp/SHP", split=split)
-    print(f"  {len(dataset)} rows before filtering.")
-
-    data: List[Dict] = []
-    skipped = 0
-
-    for row in tqdm.tqdm(dataset, desc="Processing SHP", disable=silent):
-        score_a, score_b = row["score_A"], row["score_B"]
-
-        # Both scores must be strictly positive so the ratio is valid.
-        # Zero causes ZeroDivisionError; negative causes a sign inversion
-        # that makes the ratio filter reject strong preference pairs.
-        if score_a <= 0 or score_b <= 0:
-            skipped += 1
-            continue
-
-        if max(score_a, score_b) / min(score_a, score_b) < min_score_ratio:
-            skipped += 1
-            continue
-
-        prompt = "\n\nHuman: " + row["history"] + "\n\nAssistant:"
-        if row["labels"] == 1:
-            chosen   = " " + row["human_ref_A"]
-            rejected = " " + row["human_ref_B"]
-        else:
-            chosen   = " " + row["human_ref_B"]
-            rejected = " " + row["human_ref_A"]
-
-        data.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
-
-    print(
-        f"  {len(data)} pairs kept, "
-        f"{skipped} skipped (non-positive scores or ratio < {min_score_ratio})."
-    )
-    return data
-
 
 def load_dataset_by_name(
     name: str,
@@ -295,8 +224,6 @@ def load_dataset_by_name(
         return get_hh(split, **kwargs)
     elif name == "hh_local":
         return get_hh_local(split, **kwargs)
-    elif name == "shp":
-        return get_shp(split, **kwargs)
     else:
         raise ValueError(
             f"Unknown dataset '{name}'. "
@@ -319,9 +246,9 @@ def build_trl_dataset(
     Return a HuggingFace Dataset ready for TRL's DPOTrainer.
 
     Priority order:
-      1. dataset_name in ("hh", "shp") — use built-in loader with correct
+      1. dataset_name in ("hh", "hh_local") — use built-in loader with correct
          prompt extraction logic
-      2. hf_dataset_name               — load directly from HF Hub
+      2. hf_dataset_name                    — load directly from HF Hub
       3. raw_data                       — use the provided list
       4. (none)                         — fall back to SAMPLE_PREFERENCE_DATA
 
