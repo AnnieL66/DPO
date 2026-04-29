@@ -1,0 +1,30 @@
+{
+  "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "trained_model": "./qwen-coder-dpo-hh",
+  "eval_file": "hh_eval_500.jsonl",
+  "n_pairs": 500,
+  "base_preference_accuracy": 0.52,
+  "trained_preference_accuracy": 0.52,
+  "base_margin": {
+    "mean": 8.30449034166336,
+    "median": 2.503246307373047,
+    "std": 137.93909111033454,
+    "min": -502.3558654785156,
+    "max": 517.3088226318359
+  },
+  "trained_margin": {
+    "mean": 8.303587307453155,
+    "median": 2.5620288848876953,
+    "std": 137.94115184413604,
+    "min": -503.45064544677734,
+    "max": 516.5403442382812
+  },
+  "delta_trained_minus_base": {
+    "mean": -0.0009030342102050781,
+    "median": 0.000621795654296875,
+    "std": 0.4365124934443524,
+    "min": -1.8320465087890625,
+    "max": 1.424224853515625
+  },
+  "fraction_delta_positive": 0.5
+}

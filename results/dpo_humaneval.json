@@ -1,5 +1,0 @@
-{
-  "model": "./qwen-coder-dpo-hh-lr5e6",
-  "n_problems": 164,
-  "M4_humaneval_pass_at_1": null
-}
