@@ -2,6 +2,6 @@ qwen-coder-dpo-hh/
 qwen-coder-dpo-hh-lr5e6/
 **/checkpoint-*/
 **/optimizer.pt
-**/*.safetensors
+# safetensors tracked via Git LFS (see .gitattributes)
 **/__pycache__/
 **/*.pyc
