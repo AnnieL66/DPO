@@ -16,11 +16,45 @@ DPO/
 │   ├── data_utils.py        # Dataset loading and preprocessing
 │   ├── train_trl.py         # TRL DPOTrainer entry point (recommended)
 │   └── toy_example.py       # CPU-only loss verification script
+├── eval/
+│   ├── eval_hh.py           # Preference accuracy and RM score on HH eval pairs
+│   ├── eval_humaneval.py    # HumanEval pass@1 coding benchmark
+│   └── eval_margin_delta.py # Log-prob margin comparison: base vs trained model
+├── results/                 # Raw JSON outputs from eval scripts
+├── results_eval/            # Analysis, visualizations, and documentation (see below)
 ├── tests/
 │   └── test_dpo.py          # 34-test pytest suite (no GPU required)
 ├── requirements.txt
 └── setup_env.sh             # One-command environment setup
 ```
+
+---
+
+## Evaluation Results (`results_eval/`)
+
+Pre-computed analysis comparing the DPO-trained model (`lr2e-5`) against the base model.
+
+| File | Description |
+|---|---|
+| `provenance.md` | Every command that produced each file in `results/`, plus a full glossary of all JSON fields and training log metrics |
+| `analysis.md` | Comprehensive analysis: metrics table, key findings, training dynamics, and recommendations for next steps |
+| `margin_explainer.md` | Plain-English explanation of log-prob margin and delta, with a worked example and full stats table |
+| `fig1_metrics_overview.png` | 2×2 bar chart — preference accuracy, HumanEval pass@1, RM score, and response length: baseline vs lr2e-5 |
+| `fig2_margin_analysis.png` | Log-prob margin mean/median, delta distribution, and fraction of pairs that improved |
+| `fig3_training_dynamics.png` | Loss, reward margin, and reward accuracy over 2 training epochs with eval checkpoints |
+| `generate_analysis.py` | Script that regenerates `fig1–3` and `analysis.md` from the raw JSON files in `results/` |
+
+### Quick summary of results
+
+| Metric | Baseline | DPO lr2e-5 | Δ |
+|---|---|---|---|
+| Preference accuracy | 0.520 | 0.522 | +0.002 |
+| HumanEval pass@1 | 0.555 | 0.598 | +0.043 |
+| RM score (mean) | N/A | −0.657 | — |
+| Log-prob margin (mean) | 8.30 | 8.92 | +0.615 |
+| Fraction of pairs improved (δ > 0) | — | 54.4% | — |
+
+DPO at lr=2e-5 produced a measurable shift in log-prob preference margins (+0.615 nats mean, 54.4% of pairs improved) and a notable HumanEval gain (+4.3 pp). Binary preference accuracy barely moved because the base model was already weakly calibrated before DPO. See `results_eval/analysis.md` for full details.
 
 ---
 

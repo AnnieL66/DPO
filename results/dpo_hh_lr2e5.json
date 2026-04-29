@@ -1,0 +1,9 @@
+{
+  "model": "./qwen-coder-dpo-hh-v3-lr2e5",
+  "eval_file": "hh_eval_500.jsonl",
+  "num_pairs": 500,
+  "preference_accuracy": 0.522,
+  "rm_score_mean": -0.6569029235839844,
+  "rm_score_median": -0.251953125,
+  "mean_response_length": 150.106
+}
