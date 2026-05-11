@@ -1,5 +1,5 @@
 # DPO Training for Code Generation
-
+Github link: https://github.com/AnnieL66/DPO
 **Base model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct`  
 **Comparison:** This repo implements the DPO arm of a two-method RLHF study (Reward Model + GRPO vs. DPO) for a CS 5788 course project.
 
